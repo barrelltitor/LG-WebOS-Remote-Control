@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>LG remote isolated smoke test</title>
+<style>body { font-family: sans-serif; } #calls { white-space: pre-wrap; }</style>
+<h1>Isolated remote test — no Home Assistant connection</h1>
+<p>All service calls below are recorded locally, never sent to a device.</p>
+<button id="clear">Clear calls</button>
+<button id="repeat">Enable repeat for testing</button>
+<button id="single">Disable repeat</button>
+<button id="toggle">Toggle mock TV</button>
+<button id="regression">Run lost-release regressions</button>
+<p id="result"></p>
+<div id="card"></div>
+<pre id="calls"></pre>
+<script type="module">
+import '../dist/lg-remote-control.js';
+window.calls = [];
+window.card = document.createElement('lg-remote-control');
+const state = { state: 'on', attributes: {
+    volume_level: 0.1, sound_output: 'tv_speaker', source_list: [], friendly_name: 'Mock TV',
+}};
+card.hass = {
+    states: { 'media_player.mock_tv': state }, entities: {},
+    callService: (...args) => {
+        calls.push(args);
+        document.querySelector('#calls').textContent = JSON.stringify(calls, null, 2);
+        return Promise.resolve();
+    },
+};
+card.setConfig({ entity: 'media_player.mock_tv', name: 'Mock TV' });
+document.querySelector('#card').append(card);
+document.querySelector('#clear').onclick = () => {
+    calls.length = 0;
+    document.querySelector('#calls').textContent = '[]';
+};
+document.querySelector('#repeat').onclick = () => card.setConfig({ ...card.config, volume_hold: true });
+document.querySelector('#single').onclick = () => card.setConfig({ ...card.config, volume_hold: false });
+document.querySelector('#toggle').onclick = () => {
+    state.state = state.state === 'on' ? 'off' : 'on';
+    card.hass = { ...card.hass };
+};
+window.smokeReady = card.updateComplete;
+document.querySelector('#regression').onclick = async () => {
+    const result = document.querySelector('#result');
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const press = button => button.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true, composed: true, button: 0, isPrimary: true, pointerId: 1,
+    }));
+    const check = (condition, message) => { if (!condition) throw new Error(message); };
+    try {
+        card.setConfig({ ...card.config, volume_hold: true });
+        await card.updateComplete;
+        for (const direction of ['plusButton', 'minusButton']) {
+            const button = card.shadowRoot.querySelector(`#${direction}`);
+            for (const stop of ['outside-release', 'leave', 'another-press', 'blur']) {
+                calls.length = 0;
+                press(button);
+                await wait(650);
+                const count = calls.length;
+                check(count > 0, `${direction}: repeat did not start`);
+                if (stop === 'outside-release') window.dispatchEvent(new PointerEvent('pointerup'));
+                if (stop === 'leave') button.dispatchEvent(new PointerEvent('pointerleave'));
+                if (stop === 'another-press') {
+                    // Lose the first release, press the same button again, release quickly.
+                    press(button);
+                    window.dispatchEvent(new PointerEvent('pointerup'));
+                    button.dispatchEvent(new MouseEvent('click', { button: 0, detail: 1 }));
+                }
+                if (stop === 'blur') window.dispatchEvent(new Event('blur'));
+                await wait(400);
+                check(calls.length === count + (stop === 'another-press' ? 1 : 0), `${direction}: ${stop} left a repeat running`);
+            }
+        }
+        card.setConfig({ ...card.config, volume_hold: false });
+        result.textContent = 'PASS: 8 built-card pointer regressions; + and - stop after outside release, pointer leave, a second press, and blur.';
+    } catch (error) {
+        card.setConfig({ ...card.config, volume_hold: false });
+        result.textContent = `FAIL: ${error.message}`;
+    }
+};
+</script>
+</html>

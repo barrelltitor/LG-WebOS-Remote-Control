@@ -44,7 +44,17 @@ class LgRemoteControl extends LitElement {
     private volume_value: number;
     private soundOutput: string;
     private output_entity: string;
-    private valueDisplayTimeout: NodeJS.Timeout;
+    private valueDisplayTimeout: ReturnType<typeof setTimeout>;
+    private volumeHoldTimer: ReturnType<typeof setTimeout>;
+    private volumeRepeatTimer: ReturnType<typeof setInterval>;
+    private volumeHoldService?: string;
+    private volumeRepeated = false;
+    private volumeSuppressClick?: string;
+    private readonly cancelVolumeHold = () => this._stopVolumeHold(true);
+    private readonly releaseVolumeHold = () => this._stopVolumeHold();
+    private readonly hideVolumeHold = () => {
+        if (document.hidden) this.cancelVolumeHold();
+    };
     private homeisLongPress: boolean = false;
     private homelongPressTimer: any; // Tipo generico, ma puoi specificare il tipo corretto se lo conosci
 
@@ -265,7 +275,11 @@ class LgRemoteControl extends LitElement {
                         <!-- ################################# COLORED BUTTONS END ################################# -->
 
                         <div class="grid-container-volume-channel-control" >
-                            <button class="btn ripple" id="plusButton"  style="border-radius: 50% 50% 0px 0px; margin: 0px auto 0px auto; height: 100%;" }><ha-icon icon="mdi:plus"/></button>
+                            <button class="btn ripple" id="plusButton" style="border-radius: 50% 50% 0px 0px; margin: 0px auto 0px auto; height: 100%; touch-action: manipulation;"
+                                @pointerdown=${(e: PointerEvent) => this._startVolumeHold(e, "volume_up")}
+                                @pointerleave=${this.cancelVolumeHold}
+                                @lostpointercapture=${this.cancelVolumeHold}
+                                @click=${(e: MouseEvent) => this._volumeClick(e, "volume_up")}><ha-icon icon="mdi:plus"/></button>
                             <button class="btn-flat flat-high ripple" id="homeButton" style="margin-top: 0px; height: 50%;" @mousedown=${(e) => this._homeButtonDown(e)} @touchstart=${(e) => this._homeButtonDown(e)} @mouseup=${(e) => this._homeButtonUp(e)} @touchend=${(e) => this._homeButtonUp(e)}>
     <ha-icon icon="mdi:home"></ha-icon>
 </button>
@@ -281,7 +295,11 @@ class LgRemoteControl extends LitElement {
                             <button class="btn" style="border-radius: 0px; cursor: default; margin: 0px auto 0px auto; height: 100%;"><ha-icon icon="${stateObj.attributes.is_volume_muted === true ? 'mdi:volume-off' : 'mdi:volume-high'}"/></button>
                             <button class="btn ripple" Style="color:${stateObj.attributes.is_volume_muted === true ? 'red' : ''}; height: 100%;" @click=${() => this._button("MUTE")}><span class="${stateObj.attributes.is_volume_muted === true ? 'blink' : ''}"><ha-icon icon="mdi:volume-mute"></span></button>
                             <button class="btn" style="border-radius: 0px; cursor: default; margin: 0px auto 0px auto; height: 100%;"><ha-icon icon="mdi:parking"/></button>
-                            <button class="btn ripple" id="minusButton" style="border-radius: 0px 0px 50% 50%;  margin: 0px auto 0px auto; height: 100%;" ><ha-icon icon="mdi:minus"/></button>
+                            <button class="btn ripple" id="minusButton" style="border-radius: 0px 0px 50% 50%; margin: 0px auto 0px auto; height: 100%; touch-action: manipulation;"
+                                @pointerdown=${(e: PointerEvent) => this._startVolumeHold(e, "volume_down")}
+                                @pointerleave=${this.cancelVolumeHold}
+                                @lostpointercapture=${this.cancelVolumeHold}
+                                @click=${(e: MouseEvent) => this._volumeClick(e, "volume_down")}><ha-icon icon="mdi:minus"/></button>
                             <button class="btn-flat flat-high ripple" style="margin-bottom: 0px; height: 50%;" @click=${() => this._button("INFO")}><ha-icon icon="mdi:information-variant"/></button>
                             <button class="btn ripple" style="border-radius: 0px 0px 50% 50%;  margin: 0px auto 0px auto; height: 100%;"  @click=${() => this._button("CHANNELDOWN")}><ha-icon icon="mdi:chevron-down"/></button>
                         </div>
@@ -353,125 +371,85 @@ class LgRemoteControl extends LitElement {
         });
     }
 
-    firstUpdated(changedProperties) {
-        super.firstUpdated(changedProperties);
-        const plusButton = this.shadowRoot.querySelector("#plusButton");
-        const minusButton = this.shadowRoot.querySelector("#minusButton");
+    connectedCallback() {
+        super.connectedCallback();
+        window.addEventListener("pointerdown", this.cancelVolumeHold, true);
+        window.addEventListener("pointerup", this.releaseVolumeHold, true);
+        window.addEventListener("pointercancel", this.cancelVolumeHold, true);
+        window.addEventListener("keydown", this.cancelVolumeHold, true);
+        window.addEventListener("blur", this.cancelVolumeHold);
+        document.addEventListener("visibilitychange", this.hideVolumeHold);
+    }
+
+    disconnectedCallback() {
+        this.cancelVolumeHold();
+        clearTimeout(this.valueDisplayTimeout);
+        clearTimeout(this.homelongPressTimer);
+        window.removeEventListener("pointerdown", this.cancelVolumeHold, true);
+        window.removeEventListener("pointerup", this.releaseVolumeHold, true);
+        window.removeEventListener("pointercancel", this.cancelVolumeHold, true);
+        window.removeEventListener("keydown", this.cancelVolumeHold, true);
+        window.removeEventListener("blur", this.cancelVolumeHold);
+        document.removeEventListener("visibilitychange", this.hideVolumeHold);
+        super.disconnectedCallback();
+    }
+
+    private _volumeStep(service: string) {
+        this.callServiceFromConfig(service.toUpperCase(), `media_player.${service}`, {
+            entity_id: this.output_entity,
+        });
+    }
+
+    private _startVolumeHold(event: PointerEvent, service: string) {
+        this.cancelVolumeHold();
+        this.volumeSuppressClick = undefined;
+        if (event.button !== 0 || !event.isPrimary || this.config.volume_hold !== true) return;
+        clearTimeout(this.valueDisplayTimeout);
+        this._show_vol_text = true;
+        this.volumeHoldService = service;
         const interval = this.output_entity === this.config.ampli_entity ? 250 : 100;
-        let longPressTimer;
-        let isLongPress = false;
+        this.volumeHoldTimer = setTimeout(() => {
+            this.volumeRepeated = true;
+            this._volumeStep(service);
+            this.volumeRepeatTimer = setInterval(() => this._volumeStep(service), interval);
+        }, service === "volume_down" ? 400 : 500);
+    }
 
-        // Funzione per aggiornare e chiamare il servizio
-        const updateValue = (service) => {
-            this.callServiceFromConfig(service.toUpperCase(), `media_player.${service}`, {
-                entity_id: this.output_entity,
-            });
-        };
+    private _stopVolumeHold(cancelClick = false) {
+        clearTimeout(this.volumeHoldTimer);
+        clearInterval(this.volumeRepeatTimer);
+        if (this.volumeHoldService && (cancelClick || this.volumeRepeated)) {
+            this.volumeSuppressClick = this.volumeHoldService;
+        }
+        this.volumeHoldService = undefined;
+        this.volumeRepeated = false;
+        clearTimeout(this.valueDisplayTimeout);
+        this.valueDisplayTimeout = setTimeout(() => { this._show_vol_text = false; }, 500);
+    }
 
-        // Gestore per il pulsante '+' (plusButton)
-        plusButton.addEventListener("mousedown", () => {
-            if (!isNaN(this.volume_value)) {
-                isLongPress = false;
-                this._show_vol_text = true;
-                longPressTimer = setTimeout(() => {
-                    isLongPress = true;
-                    updateValue("volume_up");
-                    longPressTimer = setInterval(() => updateValue("volume_up"), interval);
-                }, 500);
-            }
-        });
-
-        plusButton.addEventListener("touchstart", (e) => {
-            e.preventDefault();
-            if (!isNaN(this.volume_value)) {
-                isLongPress = false;
-                this._show_vol_text = true;
-                longPressTimer = setTimeout(() => {
-                    isLongPress = true;
-                    updateValue("volume_up");
-                    longPressTimer = setInterval(() => updateValue("volume_up"), interval);
-                }, 500);
-            }
-        });
-
-        plusButton.addEventListener("mouseup", () => {
-            clearTimeout(longPressTimer);
-            if (!isLongPress) {
-                updateValue("volume_up");
-            }
-            clearInterval(longPressTimer);
-            this.valueDisplayTimeout = setTimeout(() => {
-                this._show_vol_text = false;
-            }, 500);
-        });
-
-        plusButton.addEventListener("touchend", () => {
-            clearTimeout(longPressTimer);
-            if (!isLongPress) {
-                updateValue("volume_up");
-            }
-            clearInterval(longPressTimer);
-            this.valueDisplayTimeout = setTimeout(() => {
-                this._show_vol_text = false;
-            }, 500);
-        });
-
-        // Gestore per il pulsante '-' (minusButton)
-        minusButton.addEventListener("mousedown", () => {
-            if (!isNaN(this.volume_value)) {
-                isLongPress = false;
-                this._show_vol_text = true;
-                longPressTimer = setTimeout(() => {
-                    isLongPress = true;
-                    updateValue("volume_down");
-                    longPressTimer = setInterval(() => updateValue("volume_down"), interval);
-                }, 400);
-            }
-        });
-
-        minusButton.addEventListener("touchstart", (e) => {
-            e.preventDefault();
-            if (!isNaN(this.volume_value)) {
-                isLongPress = false;
-                this._show_vol_text = true;
-                longPressTimer = setTimeout(() => {
-                    isLongPress = true;
-                    updateValue("volume_down");
-                    longPressTimer = setInterval(() => updateValue("volume_down"), interval);
-                }, 400);
-            }
-        });
-
-        minusButton.addEventListener("mouseup", () => {
-            clearTimeout(longPressTimer);
-            if (!isLongPress) {
-                updateValue("volume_down");
-            }
-            clearInterval(longPressTimer);
-            this.valueDisplayTimeout = setTimeout(() => {
-                this._show_vol_text = false;
-            }, 500);
-        });
-
-        minusButton.addEventListener("touchend", () => {
-            clearTimeout(longPressTimer);
-            if (!isLongPress) {
-                updateValue("volume_down");
-            }
-            clearInterval(longPressTimer);
-            this.valueDisplayTimeout = setTimeout(() => {
-                this._show_vol_text = false;
-            }, 500);
-        });
+    private _volumeClick(event: MouseEvent, service: string) {
+        if (event.button !== 0) return;
+        this._stopVolumeHold();
+        // A long press already sent its steps; don't add another on release.
+        if (event.detail === 0 || this.volumeSuppressClick !== service) this._volumeStep(service);
+        this.volumeSuppressClick = undefined;
+        this._show_vol_text = true;
+        clearTimeout(this.valueDisplayTimeout);
+        this.valueDisplayTimeout = setTimeout(() => { this._show_vol_text = false; }, 500);
     }
 
     updated(changedProperties) {
 
         if (changedProperties.has("hass")) {
             const tvEntity = this.hass.states[this.config.entity];
+            if (!tvEntity || ['off', 'unavailable', 'unknown'].includes(tvEntity.state)) {
+                this.cancelVolumeHold();
+                return;
+            }
             const newSoundOutput = tvEntity.attributes.sound_output;
 
             if (newSoundOutput !== this.soundOutput) {
+                this.cancelVolumeHold();
                 this.soundOutput = newSoundOutput; // Aggiorna il valore della variabile di classe
                 this.requestUpdate(); // Richiedi l'aggiornamento della card
             }
@@ -513,6 +491,7 @@ class LgRemoteControl extends LitElement {
         if (!config.entity) {
             throw new Error("Invalid configuration");
         }
+        this.cancelVolumeHold();
         this.config = config;
     }
 

@@ -359,6 +359,14 @@ class LgRemoteControlEditor extends LitElement {
       ${this.setRemoteName(this._config.name)}
       ${this.selectColors(this._config)}
       ${this.colorButtonsConfig(this._config)}
+      <div>Hold volume buttons to repeat (off is safer)</div>
+      <select name="volume_hold" class="select-item"
+              .value=${String(this._config.volume_hold === true)}
+              @change=${this.configChangedBool}>
+        <option value="false">Disabled — one step per click</option>
+        <option value="true">Enabled — repeat while held</option>
+      </select>
+      <br><br>
       ${this.getDeviceAVReceiverDropdown(this._config.av_receiver_family)}
       ${this.getMediaPlayerEntityDropdown(this._config.av_receiver_family)}
       ${this.setDimensions(this._config.dimensions??{})}

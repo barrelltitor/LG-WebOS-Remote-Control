@@ -1,4 +1,5 @@
 /node_modules/
 /.rpt2_cache/
-/dist
+/dist/*
+!/dist/lg-remote-control.js
 .idea
